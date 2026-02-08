@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Background Modes - See docs/BACKGROUND_PERSISTENCE.md -->
+    <!-- 
+        NOTE: We do NOT use background modes for SSH persistence.
+        Instead, we use server-side tmux/screen sessions.
+        
+        The 'fetch' mode below is only for checking connection status
+        periodically, not for maintaining the SSH socket.
+    -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <!-- Optional: For periodic connection checks -->
+        <string>fetch</string>
+    </array>
+    
+    <!-- Required for secure text input -->
+    <key>UIApplicationExitsOnSuspend</key>
+    <false/>
+    
+    <!-- Allow HTTP connections for local network testing (remove for production) -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+</dict>
+</plist>
