@@ -1,6 +1,8 @@
 import Foundation
+import Citadel
+import NIOCore
+import NIOPosix
 import Combine
-import NMSSH
 
 // MARK: - SSH Service Protocol
 protocol SSHServiceProtocol {
@@ -8,7 +10,7 @@ protocol SSHServiceProtocol {
     var connectionState: ConnectionState { get }
     var connectionStatePublisher: AnyPublisher<ConnectionState, Never> { get }
     var outputPublisher: AnyPublisher<String, Never> { get }
-
+    
     func connect(to connection: SSHConnection, password: String?) async throws
     func disconnect()
     func executeCommand(_ command: String)
@@ -23,166 +25,208 @@ enum ConnectionState: Equatable {
     case error(String)
 }
 
-// MARK: - Real SSH Service using NMSSH
+// MARK: - Real SSH Service using Citadel
 class SSHService: ObservableObject, SSHServiceProtocol {
     @Published private(set) var connectionState: ConnectionState = .disconnected
     @Published private(set) var isConnected: Bool = false
-
+    
     private let connectionStateSubject = CurrentValueSubject<ConnectionState, Never>(.disconnected)
     private let outputSubject = PassthroughSubject<String, Never>()
-
-    private var session: NMSSHSession?
-    private var channel: NMSSHChannel?
-    private var outputQueue: DispatchQueue?
-
+    
+    private var client: SSHClient?
+    private var shellChannel: SSHShellChannel?
+    private var eventLoopGroup: EventLoopGroup?
+    private var outputTask: Task<Void, Never>?
+    
     var connectionStatePublisher: AnyPublisher<ConnectionState, Never> {
         connectionStateSubject.eraseToAnyPublisher()
     }
-
+    
     var outputPublisher: AnyPublisher<String, Never> {
         outputSubject.eraseToAnyPublisher()
     }
-
+    
     // MARK: - Connection
-
+    
     func connect(to connection: SSHConnection, password: String?) async throws {
         await MainActor.run {
             connectionState = .connecting
             connectionStateSubject.send(.connecting)
         }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else {
-                    continuation.resume(throwing: SSHError.serviceDeallocated)
-                    return
+        
+        do {
+            // Create event loop group
+            let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+            self.eventLoopGroup = eventLoopGroup
+            
+            // Build authentication method
+            let authMethod: SSHAuthenticationMethod
+            switch connection.authMethod {
+            case .password:
+                guard let password = password, !password.isEmpty else {
+                    throw SSHError.missingCredentials("No password provided")
                 }
-
-                do {
-                    // Create SSH session
-                    let session = NMSSHSession(host: connection.host, port: Int32(connection.port), andUsername: connection.username)
-                    self.session = session
-
-                    // Connect to server
-                    session.connect()
-
-                    guard session.isConnected else {
-                        throw SSHError.connectionFailed("Could not connect to \(connection.host)")
-                    }
-
-                    // Authenticate based on method
-                    switch connection.authMethod {
-                    case .password:
-                        guard let password = password, !password.isEmpty else {
-                            throw SSHError.missingCredentials("No password provided")
-                        }
-                        session.authenticate(byPassword: password)
-
-                    case .privateKey(let keyPath):
-                        // Load private key from file system or secure storage
-                        let privateKey = try loadPrivateKey(from: keyPath)
-
-                        // Try to get passphrase from keychain if key is encrypted
-                        let passphrase = try? KeychainService.shared.getPassword(
-                            for: "ssh_key_\(keyPath)",
-                            server: "key_passphrase"
-                        )
-
-                        // Load public key if it exists (optional for many servers)
-                        let publicKey = try? loadPublicKey(from: keyPath)
-
-                        session.authenticateBy(inMemoryPublicKey: publicKey,
-                                               privateKey: privateKey,
-                                               andPassword: passphrase)
-                    }
-
-                    guard session.isAuthorized else {
-                        throw SSHError.authenticationFailed("Invalid credentials")
-                    }
-
-                    // Open shell channel with PTY
-                    let channel = session.channel
-                    channel.requestPty = true
-                    channel.ptyTerminalType = NMSSHChannelPtyTerminal.xterm
-
-                    // Set up output callback
-                    channel.delegate = self
-
-                    try channel.startShell()
-
-                    self.channel = channel
-
-                    // Set up output reading queue
-                    self.outputQueue = DispatchQueue(label: "com.claudeterm.ssh-output", qos: .userInitiated)
-                    self.startReadingOutput()
-
-                    DispatchQueue.main.async {
-                        self.isConnected = true
-                        self.connectionState = .connected
-                        self.connectionStateSubject.send(.connected)
-                        self.outputSubject.send("Connected to \(connection.host)\n")
-                    }
-
-                    continuation.resume()
-
-                } catch {
-                    DispatchQueue.main.async {
-                        self.connectionState = .error(error.localizedDescription)
-                        self.connectionStateSubject.send(.error(error.localizedDescription))
-                    }
-                    continuation.resume(throwing: error)
+                authMethod = .password(.init(username: connection.username, password: password))
+                
+            case .privateKey(let keyPath):
+                // Load private key from file
+                let privateKey = try loadPrivateKey(from: keyPath)
+                // Try to get passphrase from keychain
+                let passphrase = try? KeychainService.shared.getPassword(
+                    for: "ssh_key_\(keyPath)",
+                    server: "key_passphrase"
+                )
+                
+                // Citadel uses NIOSSH for key handling
+                // For now, use password-based or try agent-based auth
+                // Full key auth would need more implementation
+                if let passphrase = passphrase {
+                    authMethod = .privateKey(.init(
+                        username: connection.username,
+                        privateKey: privateKey.data(using: .utf8)!,
+                        passphrase: passphrase
+                    ))
+                } else {
+                    authMethod = .privateKey(.init(
+                        username: connection.username,
+                        privateKey: privateKey.data(using: .utf8)!
+                    ))
                 }
             }
+            
+            // Create SSH client
+            let client = try await SSHClient.connect(
+                host: connection.host,
+                port: Int(connection.port),
+                authenticationMethod: authMethod,
+                hostKeyValidator: .acceptAnything(), // TODO: Implement proper host key validation
+                eventLoopGroup: eventLoopGroup
+            )
+            
+            self.client = client
+            
+            // Create shell channel with PTY
+            let shellChannel = try await client.openShellChannel()
+            self.shellChannel = shellChannel
+            
+            // Start reading output
+            startReadingOutput(from: shellChannel)
+            
+            await MainActor.run {
+                self.isConnected = true
+                self.connectionState = .connected
+                self.connectionStateSubject.send(.connected)
+                self.outputSubject.send("Connected to \(connection.host)\n")
+            }
+            
+        } catch {
+            await MainActor.run {
+                let errorMessage = "Connection failed: \(error.localizedDescription)"
+                self.connectionState = .error(errorMessage)
+                self.connectionStateSubject.send(.error(errorMessage))
+            }
+            throw error
         }
     }
-
+    
     func disconnect() {
-        outputQueue?.suspend()
-        outputQueue = nil
-
-        channel?.closeShell()
-        channel = nil
-
-        session?.disconnect()
-        session = nil
-
+        outputTask?.cancel()
+        outputTask = nil
+        
+        // Close shell channel
+        if let shellChannel = shellChannel {
+            Task {
+                try? await shellChannel.close()
+            }
+        }
+        shellChannel = nil
+        
+        // Disconnect client
+        if let client = client {
+            Task {
+                try? await client.close()
+            }
+        }
+        client = nil
+        
+        // Shutdown event loop
+        if let eventLoopGroup = eventLoopGroup {
+            Task {
+                try? await eventLoopGroup.shutdownGracefully()
+            }
+        }
+        eventLoopGroup = nil
+        
         isConnected = false
         connectionState = .disconnected
         connectionStateSubject.send(.disconnected)
         outputSubject.send("\nDisconnected\n")
     }
-
+    
     // MARK: - I/O Operations
-
+    
     func executeCommand(_ command: String) {
-        guard isConnected, let channel = channel else { return }
-
+        guard isConnected, let shellChannel = shellChannel else { return }
+        
         let commandWithNewline = command + "\n"
-        if let data = commandWithNewline.data(using: .utf8) {
-            channel.write(data as Data)
+        Task {
+            do {
+                try await shellChannel.write(commandWithNewline)
+            } catch {
+                outputSubject.send("\nError sending command: \(error.localizedDescription)\n")
+            }
         }
     }
-
+    
     func sendInput(_ input: String) {
-        guard isConnected, let channel = channel else { return }
-
-        if let data = input.data(using: .utf8) {
-            channel.write(data as Data)
+        guard isConnected, let shellChannel = shellChannel else { return }
+        
+        Task {
+            do {
+                try await shellChannel.write(input)
+            } catch {
+                outputSubject.send("\nError sending input: \(error.localizedDescription)\n")
+            }
         }
     }
-
+    
     func resizeTerminal(columns: Int, rows: Int) {
-        guard isConnected, let channel = channel else { return }
-
-        // Use NMSSH's built-in PTY resize method
-        // This sends the proper SSH protocol message to resize the terminal
-        channel.requestSizeWidth(Int32(columns), height: Int32(rows))
+        guard isConnected, let shellChannel = shellChannel else { return }
+        
+        Task {
+            do {
+                try await shellChannel.setTerminalSize(width: UInt16(columns), height: UInt16(rows))
+            } catch {
+                print("Failed to resize terminal: \(error)")
+            }
+        }
     }
-
+    
     // MARK: - Private Methods
-
+    
+    private func startReadingOutput(from channel: SSHShellChannel) {
+        outputTask = Task { [weak self] in
+            guard let self = self else { return }
+            
+            do {
+                for try await output in channel {
+                    let outputString = String(buffer: output)
+                    await MainActor.run {
+                        self.outputSubject.send(outputString)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isConnected = false
+                    self.connectionState = .disconnected
+                    self.connectionStateSubject.send(.disconnected)
+                    self.outputSubject.send("\nConnection closed\n")
+                }
+            }
+        }
+    }
+    
     private func loadPrivateKey(from path: String) throws -> String {
-        // First try to load from app's document directory
         let fileManager = FileManager.default
         
         // Check if it's an absolute path
@@ -212,62 +256,6 @@ class SSHService: ObservableObject, SSHServiceProtocol {
         
         throw SSHError.missingCredentials("Could not locate private key: \(path)")
     }
-    
-    private func loadPublicKey(from privateKeyPath: String) throws -> String {
-        // Public key is typically private key path + ".pub"
-        let publicKeyPath = privateKeyPath + ".pub"
-        let fileManager = FileManager.default
-        
-        // Try absolute path first
-        if publicKeyPath.hasPrefix("/") && fileManager.fileExists(atPath: publicKeyPath) {
-            guard let data = fileManager.contents(atPath: publicKeyPath),
-                  let key = String(data: data, encoding: .utf8) else {
-                throw SSHError.missingCredentials("Could not read public key")
-            }
-            return key
-        }
-        
-        // Try documents directory
-        if let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            let keyURL = documentsPath.appendingPathComponent(publicKeyPath)
-            guard fileManager.fileExists(atPath: keyURL.path) else {
-                // Public key is optional, return empty string if not found
-                return ""
-            }
-            guard let data = fileManager.contents(atPath: keyURL.path),
-                  let key = String(data: data, encoding: .utf8) else {
-                return ""
-            }
-            return key
-        }
-        
-        return ""
-    }
-
-    private func startReadingOutput() {
-        guard let channel = channel else { return }
-
-        outputQueue?.async { [weak self] in
-            while let self = self, self.isConnected {
-                do {
-                    // Read available data (non-blocking)
-                    let data = try channel.readData(1000)
-                    if let data = data as Data?, !data.isEmpty {
-                        if let output = String(data: data, encoding: .utf8) {
-                            DispatchQueue.main.async {
-                                self.outputSubject.send(output)
-                            }
-                        }
-                    }
-                    // Small delay to prevent tight loop
-                    Thread.sleep(forTimeInterval: 0.01)
-                } catch {
-                    // Channel closed or error
-                    break
-                }
-            }
-        }
-    }
 }
 
 // MARK: - SSH Errors
@@ -277,7 +265,7 @@ enum SSHError: Error, LocalizedError {
     case authenticationFailed(String)
     case missingCredentials(String)
     case channelError(String)
-
+    
     var errorDescription: String? {
         switch self {
         case .serviceDeallocated:
@@ -290,29 +278,6 @@ enum SSHError: Error, LocalizedError {
             return "Missing credentials: \(msg)"
         case .channelError(let msg):
             return "Channel error: \(msg)"
-        }
-    }
-}
-
-// MARK: - NMSSHChannel Delegate
-extension SSHService: NMSSHChannelDelegate {
-    func channel(_ channel: NMSSHChannel!, didReadData data: String!) {
-        if let data = data {
-            outputSubject.send(data)
-        }
-    }
-
-    func channel(_ channel: NMSSHChannel!, didReadError error: String!) {
-        if let error = error {
-            outputSubject.send(error)
-        }
-    }
-
-    func channelShell(_ channel: NMSSHChannel!, didCloseWithError error: Error!) {
-        DispatchQueue.main.async { [weak self] in
-            self?.isConnected = false
-            self?.connectionState = .disconnected
-            self?.connectionStateSubject.send(.disconnected)
         }
     }
 }

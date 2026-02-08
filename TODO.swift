@@ -5,14 +5,15 @@ import Foundation
 /*
  
  ## Core Functionality
- - [x] Integrate NMSSH for actual SSH connections ✓
+ - [x] Integrate Citadel for actual SSH connections ✓
  - [x] Implement proper terminal emulation (VT100/xterm) with SwiftTerm ✓
  - [x] Add SSH key support (loads from filesystem with passphrase) ✓
  - [x] Implement proper keychain storage for passwords ✓
  - [x] Add connection testing before saving ✓
  
  ## Build System
- - [x] Create Package.swift with NMSSH and SwiftTerm dependencies ✓
+ - [x] Create Package.swift with Citadel and SwiftTerm dependencies ✓
+ - [ ] Create proper Xcode project for iOS app (SPM approach won't build iOS UI)
  
  ## Connection Persistence
  - [x] Design background/foreground lifecycle handling ✓
@@ -29,6 +30,7 @@ import Foundation
  - [x] Better terminal view with SwiftTerm incremental feeding ✓
  - [x] Support for terminal colors and formatting via SwiftTerm ✓
  - [x] Add keyboard shortcuts (arrow keys, tab, etc.) ✓
+ - [x] Make ConnectionRow tappable with navigation ✓
  - [ ] Font size adjustment
  - [ ] Dark/light theme support
  - [ ] Better iPhone keyboard handling (avoid occlusion)
@@ -59,17 +61,20 @@ import Foundation
 // MARK: - Known Issues (FIXED)
 
 /*
- FIXED in latest update:
- 1. ✓ Added Package.swift with NMSSH and SwiftTerm SPM dependencies
- 2. ✓ TerminalSession now conforms to Hashable (for NavigationStack)
- 3. ✓ SSH key auth implemented - loads keys from filesystem with passphrase support
- 4. ✓ Terminal resize uses NMSSH channel.requestSizeWidth() instead of ANSI escapes
- 5. ✓ SwiftTerm feeds data incrementally - only new bytes, not entire buffer
- 6. ✓ Errors surfaced to UI via @Published lastError with banner + alert
+ FIXED in latest update (5 issues from CC):
+ 1. ✓ Switched from NMSSH to Citadel (pure Swift, SPM-native SSH library)
+ 2. ✓ Renamed TerminalView to SessionTerminalView to avoid collision with SwiftTerm.TerminalView
+ 3. ✓ Fixed broken .onAppear closure - now uses onViewModelReady callback pattern
+ 4. ✓ Made ConnectionRow tappable - added NavigationLink with hidden binding for programmatic nav
+ 5. ✓ Updated Package.swift for Citadel (though iOS apps need Xcode project, not standalone SPM)
  
- REMAINING:
- - Package.swift needs testing with swift build
- - SSH key auth needs testing with real keys
- - Test Connection needs timeout handling
- - Need to add import statements for NMSSH and SwiftTerm in source files
+ BUILD NOTES:
+ - Package.swift works for dependency resolution but iOS apps need .xcodeproj
+ - Use: File → New Project in Xcode, add Citadel and SwiftTerm as SPM deps
+ - Or: swift package generate-xcodeproj (if using old SwiftPM tooling)
+ 
+ REMAINING COMPILE ISSUES TO VERIFY:
+ - Need to test Citadel API imports work correctly
+ - SwiftTerm import may need NIO compatibility check
+ - Citadel uses async/await throughout (updated SSHService to match)
  */

@@ -4,11 +4,11 @@ import SwiftTerm
 // MARK: - Terminal View Model for SwiftTerm
 /// Observable object that bridges SSH output to SwiftTerm incrementally
 class TerminalEmulatorViewModel: ObservableObject {
-    private var terminalView: TerminalView?
+    private var terminalView: SwiftTerm.TerminalView?
     private let outputSubject = PassthroughSubject<String, Never>()
     private var cancellables = Set<AnyCancellable>()
     
-    func setTerminalView(_ view: TerminalView) {
+    func setTerminalView(_ view: SwiftTerm.TerminalView) {
         self.terminalView = view
     }
     
@@ -22,7 +22,8 @@ class TerminalEmulatorViewModel: ObservableObject {
     
     /// Get the current terminal content as attributed string
     func getTerminalContent() -> NSAttributedString? {
-        return terminalView?.getAttributedString(from: terminalView!.getTerminal().getScrollInvariantBuffer())
+        guard let terminalView = terminalView else { return nil }
+        return terminalView.getAttributedString(from: terminalView.getTerminal().getScrollInvariantBuffer())
     }
     
     /// Clear the terminal
@@ -42,17 +43,23 @@ struct TerminalEmulatorView: UIViewRepresentable {
     @StateObject private var viewModel = TerminalEmulatorViewModel()
     var onInput: (String) -> Void
     var onSizeChange: (Int, Int) -> Void
+    var onViewModelReady: (TerminalEmulatorViewModel) -> Void
     
-    func makeUIView(context: Context) -> TerminalView {
-        let terminalView = TerminalView()
+    func makeUIView(context: Context) -> SwiftTerm.TerminalView {
+        let terminalView = SwiftTerm.TerminalView()
         terminalView.terminalDelegate = context.coordinator
         terminalView.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         terminalView.backgroundColor = .black
         terminalView.nativeForegroundColor = .green
         
-        // Store reference to terminal view in view model
+        // Store reference and notify parent
         viewModel.setTerminalView(terminalView)
         context.coordinator.viewModel = viewModel
+        
+        // Notify parent that view model is ready
+        DispatchQueue.main.async {
+            onViewModelReady(viewModel)
+        }
         
         // Calculate initial size
         DispatchQueue.main.async {
@@ -63,7 +70,7 @@ struct TerminalEmulatorView: UIViewRepresentable {
         return terminalView
     }
     
-    func updateUIView(_ terminalView: TerminalView, context: Context) {
+    func updateUIView(_ terminalView: SwiftTerm.TerminalView, context: Context) {
         // No need to update - we feed data incrementally via viewModel
     }
     
@@ -112,12 +119,11 @@ extension Notification.Name {
     static let terminalTitleChanged = Notification.Name("terminalTitleChanged")
 }
 
-// MARK: - Main Terminal View
-struct TerminalView: View {
+// MARK: - Main Session Terminal View (renamed to avoid collision with SwiftTerm.TerminalView)
+struct SessionTerminalView: View {
     let session: TerminalSession
     @StateObject private var viewModel: TerminalViewModel
     @State private var inputText = ""
-    @FocusState private var isInputFocused: Bool
     @State private var showingSpecialKeys = false
     @State private var terminalEmulatorViewModel: TerminalEmulatorViewModel?
     
@@ -139,16 +145,14 @@ struct TerminalView: View {
                 },
                 onSizeChange: { cols, rows in
                     viewModel.resizeTerminal(columns: cols, rows: rows)
+                },
+                onViewModelReady: { viewModel in
+                    // Capture the view model to feed data incrementally
+                    terminalEmulatorViewModel = viewModel
+                    self.viewModel.setTerminalFeeder(viewModel)
                 }
             )
             .background(Color.black)
-            .onAppear { view in
-                // Capture the view model to feed data incrementally
-                if let terminalView = view as? TerminalEmulatorView {
-                    terminalEmulatorViewModel = terminalView.getViewModel()
-                    viewModel.setTerminalFeeder(terminalView.getViewModel())
-                }
-            }
             
             // Error Banner
             if let error = viewModel.lastError {
@@ -199,7 +203,6 @@ struct TerminalView: View {
                 TextField("Enter command...", text: $inputText)
                     .font(.system(.body, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
-                    .focused($isInputFocused)
                     .onSubmit {
                         sendInput()
                     }
@@ -243,7 +246,6 @@ struct TerminalView: View {
         }
         .onAppear {
             viewModel.connect()
-            isInputFocused = true
         }
         .onDisappear {
             viewModel.disconnect()
@@ -253,7 +255,7 @@ struct TerminalView: View {
         } message: {
             Text(errorMessage)
         }
-        .onChange(of: viewModel.lastError) { error in
+        .onReceive(viewModel.$lastError) { error in
             if let error = error {
                 errorMessage = error
                 showErrorAlert = true
@@ -354,7 +356,7 @@ struct ConnectionStatusIndicator: View {
 
 #Preview {
     NavigationStack {
-        TerminalView(session: TerminalSession(
+        SessionTerminalView(session: TerminalSession(
             connection: SSHConnection(
                 name: "Home Server",
                 host: "192.168.1.100",
