@@ -1,10 +1,76 @@
 import SwiftUI
+import SwiftTerm
 
+// MARK: - SwiftTerm Terminal View
+struct TerminalEmulatorView: UIViewRepresentable {
+    @Binding var text: String
+    var onInput: (String) -> Void
+    var onSizeChange: (Int, Int) -> Void
+    
+    func makeUIView(context: Context) -> TerminalView {
+        let terminalView = TerminalView()
+        terminalView.terminalDelegate = context.coordinator
+        terminalView.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        terminalView.backgroundColor = .black
+        terminalView.nativeForegroundColor = .green
+        
+        // Calculate initial size
+        DispatchQueue.main.async {
+            let size = terminalView.getTerminalSize()
+            onSizeChange(size.cols, size.rows)
+        }
+        
+        return terminalView
+    }
+    
+    func updateUIView(_ terminalView: TerminalView, context: Context) {
+        // Feed text to terminal emulator
+        if let data = text.data(using: .utf8) {
+            terminalView.feed(byteArray: [UInt8](data))
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onInput: onInput, onSizeChange: onSizeChange)
+    }
+    
+    class Coordinator: TerminalViewDelegate {
+        var onInput: (String) -> Void
+        var onSizeChange: (Int, Int) -> Void
+        
+        init(onInput: @escaping (String) -> Void, onSizeChange: @escaping (Int, Int) -> Void) {
+            self.onInput = onInput
+            self.onSizeChange = onSizeChange
+        }
+        
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+            if let string = String(bytes: Array(data), encoding: .utf8) {
+                onInput(string)
+            }
+        }
+        
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
+            onSizeChange(newCols, newRows)
+        }
+        
+        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {
+            // Could update navigation title here
+        }
+        
+        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {
+            // Track current directory if needed
+        }
+    }
+}
+
+// MARK: - Main Terminal View
 struct TerminalView: View {
     let session: TerminalSession
     @StateObject private var viewModel: TerminalViewModel
     @State private var inputText = ""
+    @State private var terminalContent = ""
     @FocusState private var isInputFocused: Bool
+    @State private var showingSpecialKeys = false
     
     init(session: TerminalSession) {
         self.session = session
@@ -13,24 +79,19 @@ struct TerminalView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Terminal Output
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        Text(viewModel.terminalOutput)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                    }
+            // Terminal Output with SwiftTerm
+            TerminalEmulatorView(
+                text: $terminalContent,
+                onInput: { input in
+                    viewModel.sendRawInput(input)
+                },
+                onSizeChange: { cols, rows in
+                    viewModel.resizeTerminal(columns: cols, rows: rows)
                 }
-                .background(Color.black)
-                .foregroundColor(.green)
-                .onChange(of: viewModel.terminalOutput) { _ in
-                    // Auto-scroll to bottom
-                    withAnimation {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
-                }
+            )
+            .background(Color.black)
+            .onReceive(viewModel.$terminalOutput) { output in
+                terminalContent = output
             }
             
             // Quick Actions Bar
@@ -47,8 +108,21 @@ struct TerminalView: View {
             }
             .background(Color(.systemGray6))
             
+            // Special Keys Bar (toggleable)
+            if showingSpecialKeys {
+                SpecialKeysView { key in
+                    viewModel.sendRawInput(key)
+                }
+                .background(Color(.systemGray5))
+            }
+            
             // Input Area
             HStack(spacing: 8) {
+                Button(action: { showingSpecialKeys.toggle() }) {
+                    Image(systemName: "keyboard.chevron.compact.down")
+                        .rotationEffect(.degrees(showingSpecialKeys ? 180 : 0))
+                }
+                
                 TextField("Enter command...", text: $inputText)
                     .font(.system(.body, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
@@ -72,6 +146,24 @@ struct TerminalView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 ConnectionStatusIndicator(state: viewModel.connectionState)
             }
+            
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button(action: { viewModel.clearTerminal() }) {
+                        Label("Clear Terminal", systemImage: "eraser")
+                    }
+                    
+                    Button(action: { viewModel.startClaudeInPersistentSession() }) {
+                        Label("Start tmux Session", systemImage: "play.circle")
+                    }
+                    
+                    Button(action: { viewModel.detachFromSession() }) {
+                        Label("Detach from tmux", systemImage: "escape")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
         }
         .onAppear {
             viewModel.connect()
@@ -88,6 +180,47 @@ struct TerminalView: View {
         inputText = ""
     }
 }
+
+// MARK: - Special Keys View
+struct SpecialKeysView: View {
+    let onKeyPress: (String) -> Void
+    
+    let keys: [(String, String)] = [
+        ("Tab", "\t"),
+        ("Ctrl+C", "\u{0003}"),
+        ("Ctrl+D", "\u{0004}"),
+        ("Ctrl+Z", "\u{001A}"),
+        ("Ctrl+A", "\u{0001}"),
+        ("Ctrl+E", "\u{0005}"),
+        ("Ctrl+L", "\u{000C}"),
+        ("Esc", "\u{001B}"),
+        ("↑", "\u{001B}[A"),
+        ("↓", "\u{001B}[B"),
+        ("←", "\u{001B}[D"),
+        ("→", "\u{001B}[C"),
+    ]
+    
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(keys, id: \.0) { key, code in
+                    Button(key) {
+                        onKeyPress(code)
+                    }
+                    .font(.system(.caption, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(.systemBackground))
+                    .cornerRadius(4)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+        }
+    }
+}
+
+// MARK: - Supporting Views
 
 struct QuickActionButton: View {
     let command: ClaudeCommand

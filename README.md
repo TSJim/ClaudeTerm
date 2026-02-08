@@ -33,8 +33,8 @@ ClaudeTerm/
 
 - **Language:** Swift 5.9+
 - **UI Framework:** SwiftUI
-- **SSH Library:** NMSSH (or libssh2 via Swift wrapper)
-- **Terminal Emulation:** SwiftTerm (or custom VT100 implementation)
+- **SSH Library:** [NMSSH](https://github.com/NMSSH/NMSSH) - Real SSH connections with PTY support
+- **Terminal Emulation:** [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) - Full VT100/xterm emulation with colors and special keys
 
 ## Getting Started
 

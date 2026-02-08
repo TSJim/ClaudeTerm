@@ -14,6 +14,9 @@ class TerminalViewModel: ObservableObject {
     private let persistenceManager = BackgroundPersistenceManager.shared
     private var cancellables = Set<AnyCancellable>()
     
+    /// Maximum number of lines in scrollback buffer (prevents memory bloat)
+    let maxScrollbackLines = 10000
+    
     /// Whether to automatically reconnect when returning from background
     var autoReconnectEnabled = true
     
@@ -38,7 +41,9 @@ class TerminalViewModel: ObservableObject {
         sshService.outputPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] output in
-                self?.terminalOutput += output
+                guard let self = self else { return }
+                self.terminalOutput += output
+                self.enforceScrollbackLimit()
             }
             .store(in: &cancellables)
     }
@@ -66,7 +71,16 @@ class TerminalViewModel: ObservableObject {
         
         Task {
             do {
-                try await sshService.connect(to: session.connection, password: nil)
+                // Fetch password from Keychain if needed
+                var password: String? = nil
+                if case .password = session.connection.authMethod {
+                    password = try? KeychainService.shared.getPassword(
+                        for: session.connection.username,
+                        server: "\(session.connection.host):\(session.connection.port)"
+                    )
+                }
+                
+                try await sshService.connect(to: session.connection, password: password)
                 
                 // If using multiplexer, attach to or create session
                 if useMultiplexer {
@@ -100,6 +114,18 @@ class TerminalViewModel: ObservableObject {
         }
         sshService.disconnect()
         isInMultiplexerSession = false
+    }
+    
+    // MARK: - Scrollback Management
+    
+    private func enforceScrollbackLimit() {
+        let lines = terminalOutput.components(separatedBy: .newlines)
+        if lines.count > maxScrollbackLines {
+            // Keep the most recent lines
+            let startIndex = lines.count - maxScrollbackLines
+            let trimmedLines = Array(lines[startIndex...])
+            terminalOutput = trimmedLines.joined(separator: "\n")
+        }
     }
     
     // MARK: - Background/Foreground Handling
