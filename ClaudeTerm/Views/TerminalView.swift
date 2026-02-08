@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import SwiftTerm
 
 // MARK: - Terminal View Model for SwiftTerm
