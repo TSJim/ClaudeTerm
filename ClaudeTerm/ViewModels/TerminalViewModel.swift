@@ -205,6 +205,10 @@ class TerminalViewModel: ObservableObject {
         sshService.sendInput(input)
     }
     
+    func resizeTerminal(columns: Int, rows: Int) {
+        sshService.resizeTerminal(columns: columns, rows: rows)
+    }
+
     func clearTerminal() {
         terminalFeeder?.clear()
     }

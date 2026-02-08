@@ -16,15 +16,13 @@ class TerminalEmulatorViewModel: ObservableObject {
     /// Feed new data incrementally to SwiftTerm - only the new bytes, not the entire buffer
     func feed(_ data: String) {
         guard let terminalView = terminalView else { return }
-        if let bytes = data.data(using: .utf8) {
-            terminalView.feed(byteArray: [UInt8](bytes))
-        }
+        terminalView.feed(text: data)
     }
-    
-    /// Get the current terminal content as attributed string
-    func getTerminalContent() -> NSAttributedString? {
+
+    /// Get the current terminal content as data
+    func getTerminalContent() -> Data? {
         guard let terminalView = terminalView else { return nil }
-        return terminalView.getAttributedString(from: terminalView.getTerminal().getScrollInvariantBuffer())
+        return terminalView.getTerminal().getBufferAsData()
     }
     
     /// Clear the terminal
@@ -35,7 +33,8 @@ class TerminalEmulatorViewModel: ObservableObject {
     /// Get current cursor position
     func getCursorPosition() -> (row: Int, col: Int)? {
         guard let terminal = terminalView?.getTerminal() else { return nil }
-        return (row: terminal.getCursorRow(), col: terminal.getCursorCol())
+        let loc = terminal.getCursorLocation()
+        return (row: loc.y, col: loc.x)
     }
 }
 
@@ -64,8 +63,8 @@ struct TerminalEmulatorView: UIViewRepresentable {
         
         // Calculate initial size
         DispatchQueue.main.async {
-            let size = terminalView.getTerminalSize()
-            onSizeChange(size.cols, size.rows)
+            let dims = terminalView.getTerminal().getDims()
+            onSizeChange(dims.cols, dims.rows)
         }
         
         return terminalView
@@ -112,6 +111,26 @@ struct TerminalEmulatorView: UIViewRepresentable {
         func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {
             // Track current directory if needed
         }
+
+        func scrolled(source: SwiftTerm.TerminalView, position: Double) {
+            // Handle scroll position changes
+        }
+
+        func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
+            if let url = URL(string: link) {
+                UIApplication.shared.open(url)
+            }
+        }
+
+        func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {
+            if let text = String(data: content, encoding: .utf8) {
+                UIPasteboard.general.string = text
+            }
+        }
+
+        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {
+            // Handle range selection changes
+        }
     }
 }
 
@@ -153,7 +172,7 @@ struct SessionTerminalView: View {
                     self.viewModel.setTerminalFeeder(viewModel)
                 }
             )
-            .background(Color.black)
+            .background(SwiftUI.Color.black)
             
             // Error Banner
             if let error = viewModel.lastError {
@@ -168,7 +187,7 @@ struct SessionTerminalView: View {
                     .font(.caption)
                 }
                 .padding()
-                .background(Color.red.opacity(0.2))
+                .background(SwiftUI.Color.red.opacity(0.2))
                 .foregroundColor(.red)
             }
             
@@ -184,14 +203,14 @@ struct SessionTerminalView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 8)
             }
-            .background(Color(.systemGray6))
+            .background(SwiftUI.Color(.systemGray6))
             
             // Special Keys Bar (toggleable)
             if showingSpecialKeys {
                 SpecialKeysView { key in
                     viewModel.sendRawInput(key)
                 }
-                .background(Color(.systemGray5))
+                .background(SwiftUI.Color(.systemGray5))
             }
             
             // Input Area
@@ -215,7 +234,7 @@ struct SessionTerminalView: View {
                 .disabled(inputText.isEmpty)
             }
             .padding()
-            .background(Color(.systemBackground))
+            .background(SwiftUI.Color(.systemBackground))
         }
         .navigationTitle(session.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -300,7 +319,7 @@ struct SpecialKeysView: View {
                     .font(.system(.caption, design: .monospaced))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color(.systemBackground))
+                    .background(SwiftUI.Color(.systemBackground))
                     .cornerRadius(4)
                 }
             }
@@ -327,9 +346,9 @@ struct QuickActionButton: View {
             .foregroundColor(.primary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color(.systemBackground))
+            .background(SwiftUI.Color(.systemBackground))
             .cornerRadius(8)
-            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+            .shadow(color: SwiftUI.Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
         }
     }
 }
@@ -343,7 +362,7 @@ struct ConnectionStatusIndicator: View {
             .frame(width: 10, height: 10)
     }
     
-    var statusColor: Color {
+    var statusColor: SwiftUI.Color {
         switch state {
         case .connected:
             return .green
