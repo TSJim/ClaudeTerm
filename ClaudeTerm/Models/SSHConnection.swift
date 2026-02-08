@@ -1,5 +1,8 @@
 import Foundation
 
+// MARK: - SSH Connection Model
+/// Represents a saved SSH connection configuration
+/// Supports both password and private key authentication
 struct SSHConnection: Identifiable, Codable {
     let id: UUID
     var name: String
@@ -23,6 +26,9 @@ struct SSHConnection: Identifiable, Codable {
     }
 }
 
+// MARK: - Terminal Session
+/// Represents an active or recent terminal session
+/// Tracks connection state and last access time for session management
 struct TerminalSession: Identifiable {
     let id: UUID
     let connection: SSHConnection
@@ -39,6 +45,9 @@ struct TerminalSession: Identifiable {
     }
 }
 
+// MARK: - Claude Command Presets
+/// Quick action commands for Claude Code integration
+/// These appear as buttons in the terminal view for easy access
 struct ClaudeCommand: Identifiable {
     let id: UUID
     let name: String

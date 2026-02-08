@@ -2,6 +2,8 @@
 
 A purpose-built iOS terminal app for accessing Claude Code on remote servers via SSH.
 
+> Built with SwiftUI and designed specifically for iPhone users who need reliable, persistent access to Claude Code on their own infrastructure.
+
 ## Overview
 
 ClaudeTerm is designed specifically for iPhone users who want a streamlined, mobile-optimized experience for running Claude Code on their own remote infrastructure.
