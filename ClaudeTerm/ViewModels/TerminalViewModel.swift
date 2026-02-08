@@ -4,18 +4,16 @@ import Combine
 class TerminalViewModel: ObservableObject {
     let session: TerminalSession
     
-    @Published var terminalOutput = ""
     @Published var connectionState: ConnectionState = .disconnected
     @Published var isInMultiplexerSession = false
     @Published var shouldUseMultiplexer = true
+    @Published var lastError: String? = nil
     
+    private var terminalFeeder: TerminalEmulatorViewModel?
     private let sshService: SSHServiceProtocol
     private let multiplexerManager: MultiplexerManager
     private let persistenceManager = BackgroundPersistenceManager.shared
     private var cancellables = Set<AnyCancellable>()
-    
-    /// Maximum number of lines in scrollback buffer (prevents memory bloat)
-    let maxScrollbackLines = 10000
     
     /// Whether to automatically reconnect when returning from background
     var autoReconnectEnabled = true
@@ -30,20 +28,28 @@ class TerminalViewModel: ObservableObject {
         setupLifecycleObservers()
     }
     
+    func setTerminalFeeder(_ feeder: TerminalEmulatorViewModel) {
+        self.terminalFeeder = feeder
+    }
+    
     private func setupBindings() {
         sshService.connectionStatePublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
                 self?.connectionState = state
+                // Surface errors from connection state
+                if case .error(let message) = state {
+                    self?.lastError = message
+                }
             }
             .store(in: &cancellables)
         
+        // Feed SSH output incrementally to SwiftTerm instead of accumulating
         sshService.outputPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] output in
-                guard let self = self else { return }
-                self.terminalOutput += output
-                self.enforceScrollbackLimit()
+                // Feed only the new output to SwiftTerm incrementally
+                self?.terminalFeeder?.feed(output)
             }
             .store(in: &cancellables)
     }
@@ -68,6 +74,7 @@ class TerminalViewModel: ObservableObject {
     
     func connect(useMultiplexer: Bool = true) {
         self.shouldUseMultiplexer = useMultiplexer
+        clearError()
         
         Task {
             do {
@@ -85,7 +92,7 @@ class TerminalViewModel: ObservableObject {
                 // If using multiplexer, attach to or create session
                 if useMultiplexer {
                     await MainActor.run {
-                        self.terminalOutput += "\n[Attaching to persistent session...]\n"
+                        self.terminalFeeder?.feed("\n[Attaching to persistent session...]\n")
                     }
                     let attachCommand = multiplexerManager.startClaudeInSession(
                         connectionName: session.connection.name,
@@ -94,9 +101,13 @@ class TerminalViewModel: ObservableObject {
                     sshService.executeCommand(attachCommand)
                     isInMultiplexerSession = true
                 }
+            } catch let error as SSHError {
+                await MainActor.run {
+                    self.lastError = error.localizedDescription
+                }
             } catch {
                 await MainActor.run {
-                    terminalOutput += "\nConnection failed: \(error.localizedDescription)\n"
+                    self.lastError = "Connection failed: \(error.localizedDescription)"
                 }
             }
         }
@@ -116,16 +127,10 @@ class TerminalViewModel: ObservableObject {
         isInMultiplexerSession = false
     }
     
-    // MARK: - Scrollback Management
+    // MARK: - Error Handling
     
-    private func enforceScrollbackLimit() {
-        let lines = terminalOutput.components(separatedBy: .newlines)
-        if lines.count > maxScrollbackLines {
-            // Keep the most recent lines
-            let startIndex = lines.count - maxScrollbackLines
-            let trimmedLines = Array(lines[startIndex...])
-            terminalOutput = trimmedLines.joined(separator: "\n")
-        }
+    func clearError() {
+        lastError = nil
     }
     
     // MARK: - Background/Foreground Handling
@@ -137,8 +142,8 @@ class TerminalViewModel: ObservableObject {
         let state = PersistedSessionState(
             sessionId: session.id,
             connectionId: session.connection.id,
-            lastCommand: nil, // Could track this
-            scrollbackBuffer: terminalOutput,
+            lastCommand: nil,
+            scrollbackBuffer: "", // No longer storing entire buffer
             timestamp: Date(),
             wasRunningTmux: isInMultiplexerSession
         )
@@ -150,10 +155,10 @@ class TerminalViewModel: ObservableObject {
             for command in commands {
                 sshService.sendInput(command)
             }
-            terminalOutput += "\n[Session detached - running in background on server]\n"
+            terminalFeeder?.feed("\n[Session detached - running in background on server]\n")
         } else {
             // No multiplexer - connection will drop
-            terminalOutput += "\n[App backgrounded - connection will close]\n"
+            terminalFeeder?.feed("\n[App backgrounded - connection will close]\n")
             disconnect()
         }
     }
@@ -164,7 +169,7 @@ class TerminalViewModel: ObservableObject {
         if shouldUseMultiplexer {
             if connectionState != .connected {
                 // Reconnect and reattach
-                terminalOutput += "\n[Reconnecting to session...]\n"
+                terminalFeeder?.feed("\n[Reconnecting to session...]\n")
                 connect(useMultiplexer: true)
             } else {
                 // Still connected, just reattach to multiplexer
@@ -177,7 +182,7 @@ class TerminalViewModel: ObservableObject {
             }
         } else if shouldAutoReconnect && connectionState != .connected {
             // Try to reconnect if within time window
-            terminalOutput += "\n[Auto-reconnecting...]\n"
+            terminalFeeder?.feed("\n[Auto-reconnecting...]\n")
             connect(useMultiplexer: false)
         }
         
@@ -201,7 +206,7 @@ class TerminalViewModel: ObservableObject {
     }
     
     func clearTerminal() {
-        terminalOutput = ""
+        terminalFeeder?.clear()
     }
     
     /// Start Claude Code in a persistent tmux/screen session

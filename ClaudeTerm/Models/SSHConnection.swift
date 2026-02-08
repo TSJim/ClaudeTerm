@@ -29,7 +29,7 @@ struct SSHConnection: Identifiable, Codable {
 // MARK: - Terminal Session
 /// Represents an active or recent terminal session
 /// Tracks connection state and last access time for session management
-struct TerminalSession: Identifiable {
+struct TerminalSession: Identifiable, Hashable {
     let id: UUID
     let connection: SSHConnection
     var title: String
@@ -42,6 +42,15 @@ struct TerminalSession: Identifiable {
         self.title = title
         self.isActive = isActive
         self.lastAccessed = Date()
+    }
+    
+    // Hashable conformance - use id for hashing
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: TerminalSession, rhs: TerminalSession) -> Bool {
+        lhs.id == rhs.id
     }
 }
 

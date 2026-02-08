@@ -7,9 +7,12 @@ import Foundation
  ## Core Functionality
  - [x] Integrate NMSSH for actual SSH connections ✓
  - [x] Implement proper terminal emulation (VT100/xterm) with SwiftTerm ✓
- - [x] Add SSH key support (import from clipboard/files)
+ - [x] Add SSH key support (loads from filesystem with passphrase) ✓
  - [x] Implement proper keychain storage for passwords ✓
  - [x] Add connection testing before saving ✓
+ 
+ ## Build System
+ - [x] Create Package.swift with NMSSH and SwiftTerm dependencies ✓
  
  ## Connection Persistence
  - [x] Design background/foreground lifecycle handling ✓
@@ -22,22 +25,24 @@ import Foundation
  - [ ] Add UI indicator showing multiplexer status
  
  ## UI/UX
- - [ ] Better terminal view with proper scrolling
- - [ ] Support for terminal colors and formatting
- - [ ] Add keyboard shortcuts (arrow keys, tab, etc.)
+ - [x] TerminalSession Hashable conformance for NavigationStack ✓
+ - [x] Better terminal view with SwiftTerm incremental feeding ✓
+ - [x] Support for terminal colors and formatting via SwiftTerm ✓
+ - [x] Add keyboard shortcuts (arrow keys, tab, etc.) ✓
  - [ ] Font size adjustment
  - [ ] Dark/light theme support
  - [ ] Better iPhone keyboard handling (avoid occlusion)
  
  ## Claude Code Integration
- - [ ] Quick action for "claude" command
- - [ ] Quick action for "claude --resume"
- - [ ] Session persistence across app restarts
+ - [x] Quick action for "claude" command ✓
+ - [x] Quick action for "claude --resume" ✓
+ - [x] Session persistence across app restarts (tmux) ✓
  - [ ] File upload/download for Claude Code
  - [ ] Support for Claude Code's interactive features
  
  ## Security
  - [ ] Biometric auth for opening app (optional)
+ - [x] SSH key passphrase stored in Keychain ✓
  - [ ] Secure enclave for SSH keys
  - [ ] Certificate validation options
  - [ ] Audit logging
@@ -47,22 +52,24 @@ import Foundation
  - [ ] Launch screen
  - [ ] Settings panel
  - [ ] About page
- - [ ] Error handling and user-friendly messages
+ - [x] Error handling and user-friendly messages (banner + alert) ✓
  
  */
 
 // MARK: - Known Issues (FIXED)
 
 /*
- FIXED in this update:
- 1. ✓ SSH now uses real NMSSH library with PTY support
- 2. ✓ Terminal uses SwiftTerm for proper VT100 emulation
- 3. ✓ Passwords stored/retrieved from iOS Keychain
- 4. ✓ Connection persistence via UserDefaults
- 5. ✓ Special keys supported (arrows, tab, Ctrl+C, etc.)
+ FIXED in latest update:
+ 1. ✓ Added Package.swift with NMSSH and SwiftTerm SPM dependencies
+ 2. ✓ TerminalSession now conforms to Hashable (for NavigationStack)
+ 3. ✓ SSH key auth implemented - loads keys from filesystem with passphrase support
+ 4. ✓ Terminal resize uses NMSSH channel.requestSizeWidth() instead of ANSI escapes
+ 5. ✓ SwiftTerm feeds data incrementally - only new bytes, not entire buffer
+ 6. ✓ Errors surfaced to UI via @Published lastError with banner + alert
  
  REMAINING:
- - SSH key auth still needs implementation
- - Scrollback limit needs stress testing
+ - Package.swift needs testing with swift build
+ - SSH key auth needs testing with real keys
  - Test Connection needs timeout handling
+ - Need to add import statements for NMSSH and SwiftTerm in source files
  */
