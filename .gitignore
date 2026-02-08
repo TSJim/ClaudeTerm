@@ -3,6 +3,7 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
 
 # SPM
 .build/
